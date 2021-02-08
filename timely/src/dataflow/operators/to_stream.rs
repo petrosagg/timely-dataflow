@@ -7,6 +7,7 @@ use std::task::{Context, Poll, Waker};
 
 use crate::dataflow::channels::Message;
 use crate::dataflow::operators::generic::operator::source;
+use crate::dataflow::operators::CapabilitySet;
 use crate::dataflow::{Scope, Stream};
 use crate::progress::Timestamp;
 use crate::scheduling::SyncActivator;
@@ -73,11 +74,11 @@ pub enum StreamError {
 }
 
 /// Data and progress events of the native stream.
-pub enum Event<T, D> {
-    /// Indicates that timestamps have advanced to time T
-    Progress(T),
+pub enum Event<F: IntoIterator, D> {
+    /// Indicates that timestamps have advanced to frontier F
+    Progress(F),
     /// Indicates that event D happened at time T
-    Message(T, D),
+    Message(F::Item, D),
 }
 
 struct SharedState {
@@ -166,11 +167,12 @@ pub trait ToStreamAsync<T: Timestamp, D: Data> {
     fn to_stream<S: Scope<Timestamp = T>>(self: Pin<Box<Self>>, scope: &S) -> (TimelyFuture, Stream<S, D>);
 }
 
-impl<T, D, I> ToStreamAsync<T, D> for I
+impl<T, D, F, I> ToStreamAsync<T, D> for I
 where
-    T: Timestamp,
     D: Data,
-    I: futures_core::Stream<Item = Event<T, D>> + ?Sized + 'static,
+    T: Timestamp,
+    F: IntoIterator<Item = T>,
+    I: futures_core::Stream<Item = Event<F, D>> + ?Sized + 'static,
 {
     fn to_stream<S: Scope<Timestamp = T>>(self: Pin<Box<Self>>, scope: &S) -> (TimelyFuture, Stream<S, D>) {
         let mut activator = None;
@@ -189,48 +191,36 @@ where
             // Acquire an activator, so that the operator can reschedule itself.
             *source_activator = Some(source_scope.sync_activator_for(&info.address[..]));
 
-            let mut capability = Some(capability);
+            let mut cap_set = CapabilitySet::from_elem(capability);
+
             move |output| {
                 let mut shared_state = source_shared_state.lock().unwrap();
 
-                // If the outer future hasn't been polled yet, there is nothing to do
-                if let (Some(waker), Poll::Pending) =
-                    (shared_state.waker.take(), shared_state.state)
-                {
+                let waker = shared_state.waker.take();
+
+                // If the outer future hasn't been polled yet `waker` will be None. There is nothing to do
+                if let (Some(waker), Poll::Pending) = (waker, shared_state.state) {
                     let mut context = Context::from_waker(&waker);
 
                     // Consume all the ready items of the source_stream and issue them to the operator
                     while let Poll::Ready(item) = source_stream.as_mut().poll_next(&mut context) {
                         match item {
                             Some(Event::Progress(time)) => {
-                                let cap = capability.as_mut().unwrap();
-                                if !cap.time().less_equal(&time) {
-                                    shared_state.state =
-                                        Poll::Ready(Err(StreamError::TimeMovedBackwards));
-                                    break;
-                                }
-                                cap.downgrade(&time);
+                                // FIXME: this panics if time is behind the frontier. Ideally
+                                // return error to the user through the future
+                                cap_set.downgrade(time);
                             }
                             Some(Event::Message(time, data)) => {
-                                let cap = capability.as_ref().unwrap();
-                                if !cap.time().less_equal(&time) {
-                                    shared_state.state =
-                                        Poll::Ready(Err(StreamError::TimeMovedBackwards));
-                                    break;
-                                }
-                                output.session(&cap.delayed(&time)).give(data);
+                                // FIXME: this panics, same as above
+                                output.session(&cap_set.delayed(&time)).give(data);
                             }
                             None => {
-                                capability = None;
                                 shared_state.state = Poll::Ready(Ok(()));
+                                cap_set.downgrade(&[]);
+                                waker.wake();
                                 break;
                             }
                         }
-                    }
-                    if let Poll::Ready(_) = shared_state.state {
-                        // Release the mutex and wake up the native task to communicate progress
-                        drop(shared_state);
-                        waker.wake();
                     }
                 }
             }
@@ -254,11 +244,19 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_async_stream() {
+        use futures_util::stream;
+
         use crate::dataflow::operators::Capture;
         use crate::dataflow::operators::capture::Extract;
         use crate::example;
 
-        let native_stream = futures_util::stream::iter((0..3).map(|x| Event::Message(0, x)));
+        let native_stream = stream::iter(vec![
+            Event::Message(0, 0),
+            Event::Message(0, 1),
+            Event::Message(0, 2),
+            Event::Progress(Some(0)),
+        ]);
+
         let native_stream = Box::pin(native_stream);
 
         let (data1, data2) = example(|scope| {
