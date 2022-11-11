@@ -6,6 +6,7 @@
 
 use std::default::Default;
 use std::rc::Rc;
+use std::any::TypeId;
 use std::cell::RefCell;
 
 use crate::scheduling::{Schedule, Activations};
@@ -16,6 +17,7 @@ use crate::progress::{Timestamp, Operate, operate::SharedProgress, Antichain};
 use crate::Container;
 use crate::dataflow::{StreamCore, Scope};
 use crate::dataflow::channels::pushers::TeeCore;
+use crate::dataflow::channels::pact::Pipeline;
 use crate::dataflow::channels::pact::ParallelizationContractCore;
 use crate::dataflow::operators::generic::operator_info::OperatorInfo;
 
@@ -26,6 +28,7 @@ pub struct OperatorShape {
     notify: bool,   // Does the operator require progress notifications.
     peers: usize,   // The total number of workers in the computation.
     inputs: usize,  // The number of input ports.
+    pipeline_inputs: usize,  // The number of input ports connected with a Pipeline pact.
     outputs: usize, // The number of output ports.
 }
 
@@ -37,6 +40,7 @@ impl OperatorShape {
             notify: true,
             peers,
             inputs: 0,
+            pipeline_inputs: 0,
             outputs: 0,
         }
     }
@@ -124,6 +128,9 @@ impl<G: Scope> OperatorBuilder<G> {
         stream.connect_to(target, sender, channel_id);
 
         self.shape.inputs += 1;
+        if TypeId::of::<P>() == TypeId::of::<Pipeline>() {
+            self.shape.pipeline_inputs += 1;
+        }
         assert_eq!(self.shape.outputs, connection.len());
         self.summary.push(connection);
 
@@ -236,4 +243,11 @@ where
     }
 
     fn notify_me(&self) -> bool { self.shape.notify }
+
+    // The operator may be local if any of the inputs are not connected with a Pipeline pact.
+    // When all the inputs are Pipeline then no data can arrive from another worker and therefore
+    // we can expedetite progress notifications.
+    fn local(&self) -> bool {
+        self.shape.inputs != self.shape.pipeline_inputs
+    }
 }

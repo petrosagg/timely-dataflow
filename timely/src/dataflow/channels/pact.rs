@@ -22,7 +22,7 @@ use crate::logging::{TimelyLogger as Logger, MessagesEvent};
 use crate::progress::Timestamp;
 
 /// A `ParallelizationContractCore` allocates paired `Push` and `Pull` implementors.
-pub trait ParallelizationContractCore<T, D> {
+pub trait ParallelizationContractCore<T, D>: 'static {
     /// Type implementing `Push` produced by this pact.
     type Pusher: Push<BundleCore<T, D>>+'static;
     /// Type implementing `Pull` produced by this pact.
