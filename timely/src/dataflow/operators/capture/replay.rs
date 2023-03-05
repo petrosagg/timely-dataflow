@@ -49,7 +49,7 @@ use super::event::EventIteratorCore;
 use crate::Container;
 
 /// Replay a capture stream into a scope with the same timestamp.
-pub trait Replay<T: Timestamp, C> : Sized {
+pub trait Replay<T: Timestamp, C: Container> : Sized {
     /// Replays `self` into the provided scope, as a `Stream<S, D>`.
     fn replay_into<S: Scope<Timestamp=T>>(self, scope: &mut S) -> StreamCore<S, C> {
         self.replay_core(scope, Some(std::time::Duration::new(0, 0)))

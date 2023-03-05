@@ -20,7 +20,7 @@ use crate::Container;
 /// Internally `Stream` maintains a list of data recipients who should be presented with data
 /// produced by the source of the stream.
 #[derive(Clone)]
-pub struct StreamCore<S: Scope, D> {
+pub struct StreamCore<S: Scope, D: Container> {
     /// The progress identifier of the stream's data source.
     name: Source,
     /// The `Scope` containing the stream.
@@ -63,6 +63,7 @@ impl<S: Scope, D: Container> StreamCore<S, D> {
 impl<S, D> Debug for StreamCore<S, D>
 where
     S: Scope,
+    D: Container,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Stream")
